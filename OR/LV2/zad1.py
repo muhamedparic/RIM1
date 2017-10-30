@@ -1,3 +1,4 @@
+from __future__ import print_function, division
 import math
 
 def newton_raphson(f, df, ddf, x0, max_iter, eps):
