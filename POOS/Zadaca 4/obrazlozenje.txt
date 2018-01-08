@@ -1,0 +1,8 @@
+﻿Korištenjem addWeighted metode za highboost filtriranje mnogo više naglašavamo ivice, što uzrokuje pojavu artefakta oko ivica, zbog čega slika izgleda
+neprirodno.
+
+Bilateralni filter značajno smanjuje šum na rezultirajućoj slici, što je lako vidjeti ako zoom-amo sliku.
+
+NumPy sabiranje stvara probleme na pikselima čija vrijednost tokom sabiranja pređe preko 255. Ovo uzrokuje integer overflow, zbog čega se pojavljuju boje koje
+nisu postojale tu. OpenCV funkcija add vjerovatno rješava problem tako što međurezultat čuva u varijabli koja može primiti veće vrijednosti, te naknadno vraća vrijednost
+u opseg [0, 255].
