@@ -26,12 +26,20 @@ class TabuSearch:
             raise ValueError('Invalid tabuListSize value')
         if self.maxIterations < 1:
             raise ValueError('Invalid maxIterations value')
-        if weights.shape != (self.dimensions, self.itemCount):
+        if self.weights.shape != (self.dimensions, self.itemCount):
             raise ValueError('Invalid weights matrix')
-        if values.shape != (self.itemCount,):
+        if self.values.shape != (self.itemCount,):
             raise ValueError('Invalid values vector')
-        if capacities.shape != (self.dimensions,):
+        if self.capacities.shape != (self.dimensions,):
             raise ValueError('Invalid capacities vector')
+
+        # Tabu search history variables
+        self.feasibleSteps = 0
+        self.infeasibleSteps = 0
+        self.successfulDiversifications = 0
+        self.failedDiversifications = 0
+        self.solutionImprovements = 0
+        self.tabuListFlushes = 0
 
         # Tabu search state variables
         self.curSolution = np.zeros(self.itemCount)
@@ -45,7 +53,7 @@ class TabuSearch:
         self.tabuQueue = Queue()
 
 
-    def Run(self):
+    def Run(self, printHistory = False):
         """Runs the Tabu search algorithm with the specified options,
         returning the best found solution and its value.
         """
@@ -53,7 +61,15 @@ class TabuSearch:
         while iteration < self.maxIterations:
             self.Step()
             iteration += 1
-        return self.bestSolution, bestSolutionValue
+        if printHistory:
+            print('Feasible steps:', self.feasibleSteps)
+            print('Infeasible steps:', self.infeasibleSteps)
+            print('Successful diversifications:', self.successfulDiversifications)
+            print('Failed diversifications:', self.failedDiversifications)
+            print('Solution improvements:', self.solutionImprovements)
+            print('Tabu list flushes:', self.tabuListFlushes)
+
+        return self.bestSolution, self.bestSolutionValue
 
     def Step(self):
         """Runs a single step of the Tabu search algorithm, changing
@@ -68,20 +84,25 @@ class TabuSearch:
     def StepFeasible(self):
         """Called by the Step method if curSolution is feasible.
         """
+        self.feasibleSteps += 1
         newSolution, newSolutionValue = self.FindFeasibleSolution()
-        if newSolution != None:
+        if newSolution is not None:
             self.UpdateSolution(newSolution, newSolutionValue)
         else:
             diversified = self.Diversify()
             if not diversified:
                 self.MoveToInfeasibleSpace()
+                self.failedDiversifications += 1
+            else:
+                self.successfulDiversifications += 1
 
 
     def StepInfeasible(self):
         """Called by the StepFeasible method if no feasible solution can be found
         or by Step if curSolution is infeasible.
         """
-        pass
+        self.infeasibleSteps += 1
+        self.MoveToFeasibleSpace()
 
 
     def Diversify(self):
@@ -93,10 +114,11 @@ class TabuSearch:
         else:
             newSolution = self.curSolution.copy()
             for flip in range(self.diversificationFlips):
-                idx = self.stagnationCounter.argmax()
+                idx = self.stagnationList.argmax()
                 newSolution[idx] = 1
-                self.stagnationCounter[idx] = 0
+                self.stagnationList[idx] = 0
             self.UpdateSolution(newSolution)
+        return True
 
 
     def FindFeasibleSolution(self):
@@ -133,7 +155,7 @@ class TabuSearch:
         """Adds the solution (a numpy array of ones and zeros) into the tabu
         list
         """
-        if len(tabuSet) > self.tabuListSize:
+        if len(self.tabuSet) > self.tabuListSize:
             oldest = self.tabuQueue.get(block=False)
             self.tabuSet.remove(oldest)
 
@@ -151,7 +173,7 @@ class TabuSearch:
         """
         self.curSolution = newSolution
         self.AddToTabuList(newSolution)
-        if not self.Feasible(newSolution):
+        if newSolutionValue is None and not self.Feasible(newSolution):
             self.curSolutionFeasible = False
         else:
             self.curSolutionFeasible = True
@@ -159,6 +181,8 @@ class TabuSearch:
                 newSolutionValue = self.SolutionValue(newSolution)
             if newSolutionValue > self.bestSolutionValue:
                 self.UpdateBestSolution(newSolution, newSolutionValue)
+            else:
+                self.stagnationCounter += 1
             for idx, elem in enumerate(newSolution):
                 if elem == 0:
                     self.stagnationList[idx] += 1
@@ -170,12 +194,13 @@ class TabuSearch:
         """Does not check whether or not newBestSolution is actually better
         than self.bestSolution.
         """
+        self.solutionImprovements += 1
         self.bestSolution = newBestSolution
         self.bestSolutionValue = newBestSolutionValue
         self.stagnationCounter = 0
 
 
-    def CalcInfeasibilityMeasure(self, solution):
+    def CalcInfeasibility(self, solution):
         """Returns the sum of the normalized amounts by which each capacity is
         exceeded.
         """
@@ -187,14 +212,93 @@ class TabuSearch:
         return infeasibilityMeasure
 
 
-    def BestInfeasibleSolution(self):
-        """Finds the best solution out of any neighboring ones. Returns it
-        and its value. Returns None, None if no solution not in the tabu
-        list can be found.
+    def MoveToInfeasibleSpace(self):
+        """Attempts to move the solution into infeasible space. If that's not
+        possible, moves to the best worse solution. No return value.
         """
-        curInfesabileSolution = self.curSolution.copy()
-        curInfesabileSolutionValue = self.SolutionValue(bestInfeasibleSolution)
-        bestInfeasibleSolution = curInfesabileSolution
-        bestInfeasibleSolutionValue = curInfesabileSolutionValue
-        pass
-        # TODO
+        infeasibleSolution = self.BestInfeasibleSolution()
+        if infeasibleSolution is not None:
+            self.UpdateSolution(infeasibleSolution)
+            return
+        bestWorseSolution, bestWorseSolutionValue = self.BestWorseSolution()
+        if bestWorseSolution is not None:
+            self.UpdateSolution(bestWorseSolution, bestWorseSolutionValue)
+            return
+        # If all else fails, we flush the tabu list. This wastes an iteration.
+        self.tabuSet = set()
+        self.tabuQueue = Queue()
+        self.tabuListFlushes += 1
+
+
+    def MoveToFeasibleSpace(self):
+        """Attempts to move the solution into feasible space. If that fails,
+        moves into the least infeasible neighboring solution not in the tabu
+        list
+        """
+        curCandidate = self.curSolution.copy()
+        bestCandidate = None
+        bestCandidateInfeasibility = float('inf')
+        for idx, elem in enumerate(self.curSolution):
+            curCandidate[idx] = 1 - curCandidate[idx]
+            if not self.TabuListContains(curCandidate):
+                curCandidateInfeasibility = self.CalcInfeasibility(curCandidate)
+                if curCandidateInfeasibility == 0:
+                    self.UpdateSolution(curCandidate)
+                    return
+                if curCandidateInfeasibility < bestCandidateInfeasibility:
+                    bestCandidate = curCandidate.copy()
+                    bestCandidateInfeasibility = curCandidateInfeasibility
+            curCandidate[idx] = 1 - curCandidate[idx]
+        if bestCandidate is not None:
+            self.UpdateSolution(bestCandidate)
+        else:
+            # If we've failed to find a move, flush the tabu list. This wastes an iteration.
+            self.tabuSet = set()
+            self.tabuQueue = Queue()
+            self.tabuListFlushes
+
+
+    def BestWorseSolution(self):
+        """Returns None, 0 if all worse solutions are in the tabu list, otherwise
+        the worse solution and its value
+        """
+        curWorseSolution = self.curSolution.copy()
+        bestWorseSolution = None
+        bestWorseSolutionValue = 0
+        for idx, elem in enumerate(self.curSolution):
+            if elem == 1:
+                curWorseSolution[idx] = 0
+                if not self.TabuListContains(curWorseSolution):
+                    curWorseSolutionValue = self.SolutionValue(curWorseSolution)
+                    if curWorseSolutionValue > bestWorseSolutionValue:
+                        bestWorseSolution = curWorseSolution.copy()
+                        bestWorseSolutionValue = curWorseSolutionValue
+                curWorseSolution[idx] = 1
+        return bestWorseSolution, bestWorseSolutionValue
+
+
+    def BestInfeasibleSolution(self):
+        """Finds the best solution out of any neighboring one and returns it.
+        Returns None if no solution not in the tabu list can be found.
+        """
+        curInfeasibleSolution = self.curSolution.copy()
+        curInfeasibleSolutionValue = self.SolutionValue(curInfeasibleSolution)
+        bestInfeasibleSolution = None
+        bestInfeasibleSolutionValue = curInfeasibleSolutionValue
+        for idx, elem in enumerate(self.curSolution):
+            if elem == 0:
+                curInfeasibleSolution[idx] = 1
+                if self.TabuListContains(curInfeasibleSolution):
+                    continue
+
+                curInfeasibleSolutionValue = self.SolutionValue(curInfeasibleSolution)
+                if curInfeasibleSolutionValue > bestInfeasibleSolutionValue:
+                    bestInfeasibleSolution = curInfeasibleSolution.copy()
+                    bestInfeasibleSolutionValue = curInfeasibleSolutionValue
+                curInfeasibleSolution[idx] = 0
+
+        return bestInfeasibleSolution
+
+
+if __name__ == '__main__':
+    print('You\'ve tried opening TabuSearch.py directly, you should just use the class instead')
